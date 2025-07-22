@@ -77,8 +77,6 @@ data/
         └── ...
 ```
 
-```
-
 ### 4. Training Options
 
 ```bash
