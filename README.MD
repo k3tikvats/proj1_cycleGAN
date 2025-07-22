@@ -57,9 +57,6 @@ cd project1_SAR_to_EO
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Alternative manual installation
-pip install torch torchvision rasterio numpy matplotlib opencv-python tqdm piq
 ```
 
 ### 2. Data Preparation
@@ -80,40 +77,14 @@ data/
         └── ...
 ```
 
-### 3. Configuration Setup
-
-Edit `config.py` to match your data paths and training preferences:
-
-```python
-# Modify these paths in config.py
-DATA_CONFIG = {
-    'sar_dir': 'path/to/your/sar/images',
-    'eo_dir': 'path/to/your/eo/images',
-    'max_samples': 5000,  # Adjust based on your dataset size
-    # ... other parameters
-}
 ```
 
 ### 4. Training Options
-
-#### Option A: Quick Start (Default Settings)
 
 ```bash
 python train_cyclegan.py
 ```
 
-#### Option B: Configuration-Based Training (Recommended)
-
-```bash
-python train_with_config.py
-```
-
-#### Option C: Custom Training
-
-```python
-from train_cyclegan import main
-loss_history = main()
-```
 
 ### 5. Monitor Training
 
@@ -188,19 +159,7 @@ Training outputs will be saved in `./runs/exp1/` (or your configured output dire
 - **Patch-based**: Focuses on local image patches rather than global structure
 - **70×70 Receptive Field**: Optimal for texture discrimination
 - **Instance Normalization**: Consistent with generator architecture
-
-### 3. **CycleGAN Architecture**
-
-**Network Structure:**
-
-```
-SAR ──G_AB──> EO_fake ──G_BA──> SAR_reconstructed
- ↓                               ↑
-D_A                              │
-                                 │
-EO ──G_BA──> SAR_fake ──G_AB──> EO_reconstructed
- ↓                               ↑
-D_B                              │
+                            │
 ```
 
 **Training Process:**
@@ -217,25 +176,6 @@ D_B                              │
 - **Loss Balance**: Generator and discriminator losses should remain relatively balanced
 - **SSIM Improvement**: Structural similarity steadily improves during training
 - **Memory Usage**: 256×256 patches with batch size 8 requires ~6GB GPU memory
-
-### 2. **Data Quality Impact**
-
-- **Co-registration Importance**: Poorly aligned SAR-EO pairs significantly degrade performance
-- **Seasonal Consistency**: Training on winter data works best for winter test images
-- **Patch Size Trade-off**: Larger patches (512×512) provide better context but require more memory
-
-### 3. **Model Performance**
-
-- **SSIM Scores**: Achieved 0.65-0.75 SSIM on validation set
-- **Visual Quality**: Generated images show realistic textures and spatial structures
-- **Feature Preservation**: Important geographical features (rivers, forests, urban areas) are well preserved
-- **Spectral Characteristics**: RGB outputs maintain natural color distributions
-
-### 4. **Band Configuration Results**
-
-- **RGB Mode**: Best for visual interpretation and presentation
-- **NIR_SWIR Mode**: Better for vegetation and water body analysis
-- **RGB_NIR Mode**: Balanced approach for multi-spectral applications
 
 ### 5. **Training Optimizations**
 
@@ -274,53 +214,7 @@ Files should be organized as shown above in the "Instructions to Run Code" secti
 - Automatic checkpoint saving
 - Sample image generation during training
 
-## Usage
 
-### Basic Training
-
-```python
-from train_cyclegan import main
-
-# Run training with default parameters
-loss_history = main()
-```
-
-### Custom Training
-
-```python
-from preprocess import collect_data_paths, SARToEODataset
-from train_cyclegan import ResnetGenerator, NLayerDiscriminator, CycleGANTrainer
-import torch
-from torch.utils.data import DataLoader, random_split
-
-# Set up data
-sar_dir = "path/to/sar/images"
-eo_dir = "path/to/eo/images"
-sar_paths, eo_paths = collect_data_paths(sar_dir, eo_dir, max_samples=1000)
-
-# Create dataset
-dataset = SARToEODataset(sar_paths, eo_paths, output_mode='RGB')
-train_ds, val_ds = random_split(dataset, [800, 200])
-
-train_loader = DataLoader(train_ds, batch_size=4, shuffle=True)
-val_loader = DataLoader(val_ds, batch_size=1, shuffle=False)
-
-# Initialize models
-G_AB = ResnetGenerator(input_nc=3, output_nc=3)
-G_BA = ResnetGenerator(input_nc=3, output_nc=3)
-D_A = NLayerDiscriminator(input_nc=3)
-D_B = NLayerDiscriminator(input_nc=3)
-
-# Train
-trainer = CycleGANTrainer(
-    G_AB, G_BA, D_A, D_B,
-    dataloaders=(train_loader, val_loader),
-    optimizers=(optimizer_G, optimizer_D),
-    device='cuda'
-)
-
-loss_history = trainer.train(epochs=10, metrics_fn=ssim_metric)
-```
 
 ## Model Parameters
 
@@ -380,29 +274,4 @@ The dataset supports different output modes:
 - **SSIM**: Structural Similarity Index for image quality assessment
 - **L1 Loss**: Pixel-wise difference metric (fallback if SSIM unavailable)
 
-## Tips for Better Results
 
-1. **Data Quality**: Ensure SAR and EO images are properly co-registered
-2. **Patch Size**: Use 256x256 patches for balanced quality/memory usage
-3. **Training Duration**: Train for 15-50 epochs depending on dataset size
-4. **Learning Rate**: Start with 2e-4, reduce if training becomes unstable
-5. **Batch Size**: Adjust based on available GPU memory
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Memory Error**: Reduce batch size or patch size
-2. **Missing Dependencies**: Install rasterio and piq libraries
-3. **CUDA Out of Memory**: Use smaller batch size or enable gradient checkpointing
-4. **Poor Results**: Increase training epochs or adjust cycle consistency weight
-
-### Performance Optimization
-
-- Use mixed precision training for faster training
-- Implement gradient accumulation for effective larger batch sizes
-- Use multiple GPUs with DataParallel for larger datasets
-
-## License
-
-This project is part of the MLR Lab Summer School curriculum.
