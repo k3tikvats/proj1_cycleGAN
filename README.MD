@@ -159,8 +159,6 @@ Training outputs will be saved in `./runs/exp1/` (or your configured output dire
 - **Patch-based**: Focuses on local image patches rather than global structure
 - **70×70 Receptive Field**: Optimal for texture discrimination
 - **Instance Normalization**: Consistent with generator architecture
-                            │
-```
 
 **Training Process:**
 
