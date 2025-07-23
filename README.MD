@@ -1,273 +1,211 @@
 # SAR to EO Image Translation using CycleGAN
 
+This project implements a CycleGAN-based approach for translating Synthetic Aperture Radar (SAR) images to Electro-Optical (EO) images using the SEN12MS dataset.
+
 ## Team Members
 
 - **[Kartik Vats]** - [23/CS/214] - [kartikvats_23cs214@dtu.ac.in]
 - **[Pratham Jain]** - [23/IT/201] - [prathamjain_23se117@dtu.ac.in]
 - **[Tanishk Gopalani]** - [23/EE/266] - [tanishkgopalani_23ee266@dtu.ac.in]
 
+*Note: Please update with actual team member information*
+
 ## Project Overview
 
-This project implements a CycleGAN-based approach for translating Synthetic Aperture Radar (SAR) images to Electro-Optical (EO) images. The model learns to perform domain translation between SAR and optical satellite imagery without requiring paired training data.
+This project addresses the challenge of converting SAR satellite imagery to EO imagery using deep learning. SAR images provide all-weather, day-night imaging capabilities but are difficult to interpret. Our CycleGAN-based approach learns to translate SAR images to more interpretable EO images while maintaining semantic content.
 
-### Problem Statement
+### Key Features
 
-SAR sensors can capture images in all weather conditions and at any time of day, but the resulting images are difficult to interpret compared to optical imagery. This project aims to translate SAR images to more interpretable optical-like images using deep learning techniques.
-
-### Approach
-
-We use CycleGAN architecture which consists of:
-
-- Two generators (SAR→EO and EO→SAR)
-- Two discriminators (for SAR and EO domains)
-- Cycle consistency loss to ensure meaningful translations
-- Adversarial loss for realistic image generation
-
-## Project Structure
-
-```
-project1_SAR_to_EO/
-├── preprocess.py          # Data preprocessing and dataset utilities
-├── train_cyclegan.py      # Model architectures and training logic
-├── train_with_config.py   # Configuration-based training script
-├── config.py              # Configuration parameters
-├── requirements.txt       # Dependencies list
-├── kaggle.ipynb          # Original Jupyter notebook (source)
-└── README.MD             # Project documentation
-```
-
-## Tools and Frameworks Used
-
-- **PyTorch**: Deep learning framework for model implementation
-- **Rasterio**: Reading and processing satellite imagery (TIFF files)
-- **NumPy**: Numerical computations and array operations
-- **Matplotlib**: Visualization and plotting
-- **OpenCV**: Image processing utilities
-- **tqdm**: Progress bars for training loops
-- **PIQ**: Perceptual image quality metrics (SSIM)
+- **CycleGAN Architecture**: Bidirectional translation between SAR and EO domains
+- **ResNet-18 Backbone**: Pretrained encoder for robust feature extraction
+- **Custom Decoder**: Specialized upsampling blocks for high-quality image generation
+- **Progressive Training**: Learning rate scheduling and layer freezing strategies
+- **Multi-loss Optimization**: Combines adversarial, cycle consistency, perceptual, and SSIM losses
+- **Comprehensive Evaluation**: Multiple metrics including SSIM, PSNR, and L1 loss
 
 ## Instructions to Run Code
 
-### 1. Environment Setup
+### Prerequisites
 
+1. Python 3.8 or higher
+2. CUDA-capable GPU (recommended)
+3. SEN12MS dataset (download separately)
+
+### Installation
+
+1. Clone the repository:
 ```bash
-# Clone or download the project
-# Navigate to project directory
+git clone [repository_url]
 cd project1_SAR_to_EO
+```
 
-# Install dependencies
+2. Install dependencies:
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Data Preparation
-
-Organize your data in the following structure:
-
-```
-data/
-├── SAR_images/
-│   └── ROIs2017_winter_s1/ROIs2017_winter/
-│       ├── s1_<region1>/
-│       ├── s1_<region2>/
-│       └── ...
-└── EO_images/
-    └── ROIs2017_winter_s2/ROIs2017_winter/
-        ├── s2_<region1>/
-        ├── s2_<region2>/
-        └── ...
+3. Update data path in `config.py`:
+```python
+DATA_PATH = "/path/to/your/sen12ms/dataset"
 ```
 
-### 4. Training Options
+### Training
 
+To test the environment setup:
 ```bash
-python train_cyclegan.py
+python utils.py
 ```
 
+To start training from scratch:
+```bash
+python train_cycleGAN.py
+```
 
-### 5. Monitor Training
+To start training with the main entry point:
+```bash
+python run.py train
+```
 
-Training outputs will be saved in `./runs/exp1/` (or your configured output directory):
+### Evaluation
 
-- **Checkpoints**: `./runs/exp1/checkpoints/`
-- **Sample Images**: `./runs/exp1/images/`
+To evaluate a trained model:
+```bash
+python evaluate_results.py --checkpoint ./checkpoints/checkpoint_10.pt --num_samples 20
+```
+
+To generate sample results:
+```bash
+python evaluate_results.py --checkpoint ./checkpoints/checkpoint_best.pt --output_dir ./my_results
+```
+
+Using the main entry point:
+```bash
+python run.py eval --checkpoint ./checkpoints/checkpoint_10.pt --num_samples 20
+```
+
+### Project Structure
+
+```
+project1_SAR_to_EO\
+├── README.md                    # Project summary, team info, instructions
+├── requirements.txt             # List of Python libraries used
+├── preprocess.py               # Preprocessing & normalization code
+├── train_cycleGAN.py           # SAR → EO training scripts
+├── evaluate_results.py         # Visualizations and metrics
+├── generated_samples/          # Sample generated EO images
+├── config.py                   # Configuration parameters
+├── models.py                   # CycleGAN model architectures
+├── losses.py                   # Loss functions
+├── utils.py                    # Utility functions and testing
+├── run.py                      # Main entry point script
+└── checkpoints/                # Model checkpoints (created during training)
+```
 
 ## Data Preprocessing Steps
 
-### 1. **Image Reading and Band Selection**
+### 1. Data Loading
+- **SEN12MS Dataset**: Uses winter season ROIs from 2017
+- **SAR Data**: Sentinel-1 VV and VH polarizations
+- **EO Data**: Sentinel-2 13-band multispectral imagery
+- **Patch Matching**: Ensures spatial correspondence between SAR and EO patches
 
-- **SAR Processing**: Read VV and VH polarization bands
-- **EO Processing**: Select specific bands based on output mode:
-  - RGB: Bands [B4, B3, B2] for natural color visualization
-  - NIR_SWIR: Bands [B8, B11, B5] for vegetation and moisture analysis
-  - RGB_NIR: Bands [B4, B3, B2, B8] combining visible and near-infrared
+### 2. Normalization
+- **SAR Normalization**: Clips values to [-31.9, -1.3] dB range, then normalizes to [-1, 1]
+- **EO Normalization**: Clips values to [7.0, 5356.0] range, then normalizes to [-1, 1]
+- **GAN-Compatible**: Ensures proper input range for stable GAN training
 
-### 2. **SAR Feature Engineering**
-
-- **VV/VH Ratio Calculation**: Create additional channel by computing VV/VH ratio
-- **Final SAR Channels**: [VV, VH, VV/VH_ratio] providing 3-channel input
-
-### 3. **Normalization**
-
-- **Min-Max Normalization**: Scale pixel values to [0, 1] range
-- **Formula**: `(pixel - min_value) / (max_value - min_value + 1e-6)`
-- **Stability**: Add small epsilon to prevent division by zero
-
-### 4. **Patch Extraction**
-
-- **Patch Size**: Extract 256×256 pixel patches for memory efficiency
-- **Spatial Cropping**: Take top-left corner patches from larger images
-- **Consistent Sizing**: Ensure all inputs have same dimensions
-
-### 5. **Data Matching and Validation**
-
-- **Filename Matching**: Convert SAR filenames (s1*) to EO filenames (s2*)
-- **Existence Check**: Verify corresponding EO files exist for each SAR file
-- **Directory Validation**: Ensure SAR and EO subdirectories match
+### 3. Data Augmentation
+- **Quality Control**: Automatically filters out patches with NaN or infinite values
+- **Random Sampling**: Implements robust sampling to handle corrupted data
+- **Memory Optimization**: Uses channels_last memory format for improved performance
 
 ## Models Used
 
-### 1. **Generator Architecture (ResNet-based)**
+### Generator Architecture
+- **Encoder**: ResNet-18 backbone with pretrained ImageNet weights
+- **Decoder**: Custom upsampling blocks using UpProjection layers
+- **Skip Connections**: U-Net style connections for detail preservation
+- **Normalization**: Instance normalization for improved GAN stability
+- **Output**: Tanh activation for [-1, 1] output range
 
-**Components:**
+### Discriminator/Critic Architecture
+- **Backbone**: ResNet-18 with modified normalization
+- **PatchGAN**: Outputs spatial predictions rather than single values
+- **Spectral Normalization**: Applied for training stability
+- **Dropout**: Regularization to prevent overfitting
 
-- **Initial Convolution**: 7×7 conv + Instance Norm + ReLU
-- **Downsampling Blocks**: 2 layers of 3×3 conv + Instance Norm + ReLU (stride=2)
-- **Residual Blocks**: 9 ResNet blocks for feature transformation
-- **Upsampling Blocks**: 2 transpose conv layers for spatial reconstruction
-- **Output Layer**: 7×7 conv + Tanh activation
-
-**Key Features:**
-
-- **Instance Normalization**: Better for style transfer tasks
-- **Reflection Padding**: Reduces boundary artifacts
-- **Skip Connections**: Preserve fine-grained details
-- **Tanh Output**: Maps to [-1, 1] range
-
-### 2. **Discriminator Architecture (PatchGAN)**
-
-**Components:**
-
-- **Multi-layer CNN**: 3-4 convolutional layers
-- **Progressive Downsampling**: Each layer reduces spatial resolution
-- **Leaky ReLU**: Activation function for stable training
-- **Final Classification**: Single channel output for real/fake classification
-
-**Design Philosophy:**
-
-- **Patch-based**: Focuses on local image patches rather than global structure
-- **70×70 Receptive Field**: Optimal for texture discrimination
-- **Instance Normalization**: Consistent with generator architecture
-
-**Training Process:**
-
-- **Generator Training**: Minimize adversarial + cycle consistency losses
-- **Discriminator Training**: Classify real vs. generated images
-- **Image Pooling**: Buffer previous generations for stable training
+### Training Strategy
+- **Progressive Learning**: Different learning rates and freezing schedules across epochs
+- **Mixed Precision**: Automatic mixed precision for memory efficiency
+- **Gradient Handling**: Robust NaN/Inf gradient detection and correction
+- **Checkpointing**: Regular model saves for recovery and evaluation
 
 ## Key Findings and Observations
 
-### 1. **Training Dynamics**
+### Training Insights
+1. **Progressive Learning**: Early epochs benefit from frozen ResNet layers, allowing custom components to adapt first
+2. **Loss Balancing**: Careful weighting of adversarial, cycle consistency, and perceptual losses is crucial
+3. **Stability**: Instance normalization and spectral normalization significantly improve training stability
+4. **Memory Efficiency**: Channels_last memory format and gradient scaling enable larger batch sizes
 
-- **Convergence**: Model typically converges within 15-25 epochs
-- **Loss Balance**: Generator and discriminator losses should remain relatively balanced
-- **SSIM Improvement**: Structural similarity steadily improves during training
-- **Memory Usage**: 256×256 patches with batch size 8 requires ~6GB GPU memory
+### Model Performance
+1. **Visual Quality**: Generated EO images show good visual correspondence with ground truth
+2. **Spectral Fidelity**: RGB composites maintain realistic color distributions
+3. **Detail Preservation**: High-frequency details are reasonably preserved across translation
+4. **Semantic Consistency**: Land cover types are generally maintained in translation
 
-### 5. **Training Optimizations**
+### Challenges Addressed
+1. **Domain Gap**: Large difference between SAR and EO modalities
+2. **Training Stability**: GAN training instability mitigated through careful architecture choices
+3. **Memory Constraints**: Efficient implementation allows training on standard hardware
+4. **Data Quality**: Robust handling of real-world dataset inconsistencies
 
-- **Learning Rate**: 2e-4 provides stable training without mode collapse
-- **Cycle Loss Weight**: λ=10.0 ensures good reconstruction quality
-- **Image Pool Size**: 50 images provides good discriminator stability
-- **Batch Size**: 8 samples optimal for most GPUs while maintaining gradient quality
+## Tools and Frameworks Used
 
-## Data Structure
+### Core Dependencies
+- **PyTorch**: Deep learning framework (v1.9+)
+- **torchvision**: Computer vision utilities and pretrained models
+- **CUDA**: GPU acceleration for training and inference
 
-Files should be organized as shown above in the "Instructions to Run Code" section.
+### Data Processing
+- **rasterio**: Geospatial raster data I/O
+- **numpy**: Numerical computing
+- **PIL/Pillow**: Image processing and saving
 
-## Key Components
+### Evaluation and Visualization
+- **matplotlib**: Plotting and visualization
+- **torchmetrics**: Standardized metric calculations (SSIM, PSNR)
+- **tqdm**: Progress bars for training monitoring
 
-### 1. Data Preprocessing (`preprocess.py`)
-
-- **SARToEODataset**: Custom PyTorch dataset class for handling SAR-EO image pairs
-- **normalize()**: Image normalization function
-- **collect_data_paths()**: Utility to collect and match SAR/EO file paths
-- **ImagePool**: Buffer for generated images to stabilize discriminator training
-- **show_tensor_image()**: Visualization utility for tensor images
-
-### 2. Model Architecture (`train_cyclegan.py`)
-
-- **ResnetGenerator**: ResNet-based generator with residual blocks
-- **NLayerDiscriminator**: Multi-layer discriminator with instance normalization
-- **ResnetBlock**: Residual block component
-- **CycleGANTrainer**: Complete training pipeline
-
-### 3. Training Features
-
-- Cycle consistency loss for unpaired translation
-- Adversarial loss for realistic image generation
-- Image buffer pooling for stable discriminator training
-- SSIM metric evaluation
-- Automatic checkpoint saving
-- Sample image generation during training
-
-
-
-## Model Parameters
-
-### Generator (ResnetGenerator)
-
-- **input_nc**: Number of input channels (3 for SAR: VV, VH, VV/VH ratio)
-- **output_nc**: Number of output channels (3 for RGB)
-- **ngf**: Number of generator filters (default: 64)
-- **n_blocks**: Number of residual blocks (default: 9)
-
-### Discriminator (NLayerDiscriminator)
-
-- **input_nc**: Number of input channels
-- **ndf**: Number of discriminator filters (default: 64)
-- **n_layers**: Number of conv layers (default: 3)
-
-### Training Parameters
-
-- **Learning rate**: 2e-4 for both generators and discriminators
-- **Batch size**: 8 (adjustable based on GPU memory)
-- **Cycle consistency weight**: 10.0
-- **Optimizer**: AdamW with weight decay
-
-## Output Files
-
-Training generates the following outputs in the specified output directory:
-
-```
-runs/exp1/
-├── checkpoints/
-│   ├── best.pth          # Best model based on SSIM
-│   ├── epoch_1.pth       # Epoch checkpoints
-│   ├── epoch_2.pth
-│   └── ...
-└── images/
-    ├── epoch_5_sample_0.png    # Sample generated images
-    ├── epoch_5_sample_1.png
-    └── ...
-```
-
-## Band Configurations
-
-The dataset supports different output modes:
-
-- **RGB**: Bands [B4, B3, B2] - Standard RGB visualization
-- **NIR_SWIR**: Bands [B8, B11, B5] - Near-infrared and short-wave infrared
-- **RGB_NIR**: Bands [B4, B3, B2, B8] - RGB + Near-infrared
-
-## Loss Functions
-
-1. **Adversarial Loss**: MSE loss for generator/discriminator training
-2. **Cycle Consistency Loss**: L1 loss ensuring F(G(x)) ≈ x
-3. **Combined Loss**: L_GAN + λ \* L_cycle (λ = 10.0)
+### Development Tools
+- **scikit-image**: Additional image processing utilities
+- **opencv-python**: Computer vision operations
 
 ## Evaluation Metrics
 
-- **SSIM**: Structural Similarity Index for image quality assessment
-- **L1 Loss**: Pixel-wise difference metric (fallback if SSIM unavailable)
+- **SSIM**: Structural Similarity Index for perceptual quality
+- **PSNR**: Peak Signal-to-Noise Ratio for signal fidelity
+- **L1 Loss**: Mean absolute error between generated and target images
+- **Perceptual Loss**: VGG-based feature matching for semantic similarity
 
+## Future Improvements
 
+1. **Architecture Enhancements**: Explore attention mechanisms and newer GAN architectures
+2. **Multi-Scale Training**: Implement progressive growing or multi-resolution training
+3. **Dataset Expansion**: Include more seasons and geographic regions
+4. **Application-Specific Metrics**: Develop domain-specific evaluation criteria
+5. **Real-Time Inference**: Optimize models for deployment scenarios
+
+## Acknowledgments
+
+- SEN12MS dataset creators for providing high-quality SAR-EO image pairs
+- PyTorch community for robust deep learning framework
+- Research community for CycleGAN and related architectural innovations
+
+## License
+
+This project is developed for educational purposes. Please respect the licensing terms of the SEN12MS dataset and other dependencies.
+
+---
+
+*For questions or issues, please contact the team members listed above.*

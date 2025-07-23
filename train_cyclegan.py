@@ -1,415 +1,406 @@
+"""
+Training script for CycleGAN SAR to EO conversion.
+Handles the complete training loop with progressive learning and checkpointing.
+"""
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
-import itertools
+import torch.optim as optim
+import numpy as np
+from torch.amp import GradScaler, autocast
+from tqdm.auto import tqdm
 import os
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+import warnings
 
-from preprocess import SARToEODataset, ImagePool, collect_data_paths, show_tensor_image
+from config import *
+from preprocess import create_dataloaders, setup_data_environment
+from models import create_models
+from losses import CycleGANLosses
 
-
-class ResnetBlock(nn.Module):
-    """Residual block for ResNet generator."""
-    
-    def __init__(self, dim, norm_layer=nn.InstanceNorm2d):
-        """
-        Initialize ResNet block.
-        
-        Args:
-            dim (int): Number of input/output channels
-            norm_layer: Normalization layer to use
-        """
-        super().__init__()
-        self.conv_block = nn.Sequential(
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(dim, dim, kernel_size=3, padding=0),
-            norm_layer(dim),
-            nn.ReLU(True),
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(dim, dim, kernel_size=3, padding=0),
-            norm_layer(dim)
-        )
-    
-    def forward(self, x):
-        return x + self.conv_block(x)
+warnings.filterwarnings('ignore')
 
 
-class ResnetGenerator(nn.Module):
-    """ResNet-based generator for CycleGAN."""
-    
-    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9, norm_layer=nn.InstanceNorm2d):
-        """
-        Initialize ResNet generator.
-        
-        Args:
-            input_nc (int): Number of input channels
-            output_nc (int): Number of output channels
-            ngf (int): Number of generator filters in first conv layer
-            n_blocks (int): Number of ResNet blocks
-            norm_layer: Normalization layer to use
-        """
-        super().__init__()
-
-        model = [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0),
-            norm_layer(ngf),
-            nn.ReLU(inplace=True)
-        ]
-
-        # Downsampling
-        n_downsampling = 2
-        for i in range(n_downsampling):
-            mult = 2 ** i
-            model += [
-                nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
-                norm_layer(ngf * mult * 2),
-                nn.ReLU(inplace=True)
-            ]
-
-        # Residual blocks
-        mult = 2 ** n_downsampling
-        for _ in range(n_blocks):
-            model += [ResnetBlock(ngf * mult, norm_layer=norm_layer)]
-
-        # Upsampling
-        for i in range(n_downsampling):
-            mult = 2 ** (n_downsampling - i)
-            model += [
-                nn.ConvTranspose2d(ngf * mult, ngf * mult // 2, kernel_size=3, stride=2, padding=1, output_padding=1),
-                norm_layer(ngf * mult // 2),
-                nn.ReLU(inplace=True)
-            ]
-
-        # Output layer
-        model += [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0),
-            nn.Tanh()
-        ]
-
-        self.model = nn.Sequential(*model)
-
-    def forward(self, x):
-        return self.model(x)
-
-
-class NLayerDiscriminator(nn.Module):
-    """N-layer discriminator for CycleGAN."""
-    
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d):
-        """
-        Initialize N-layer discriminator.
-        
-        Args:
-            input_nc (int): Number of input channels
-            ndf (int): Number of discriminator filters in first conv layer
-            n_layers (int): Number of conv layers in discriminator
-            norm_layer: Normalization layer to use
-        """
-        super().__init__()
-        kw = 4
-        padw = 1
-
-        sequence = [
-            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
-            nn.LeakyReLU(0.2, inplace=True)
-        ]
-
-        nf_mult = 1
-        for n in range(1, n_layers):
-            nf_mult_prev = nf_mult
-            nf_mult = min(2 ** n, 8)
-            sequence += [
-                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw),
-                norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, inplace=True)
-            ]
-
-        nf_mult_prev = nf_mult
-        nf_mult = min(2 ** n_layers, 8)
-        sequence += [
-            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw),
-            norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, inplace=True)
-        ]
-
-        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]
-
-        self.model = nn.Sequential(*sequence)
-
-    def forward(self, x):
-        return self.model(x)
-
-
-class CycleGANTrainer:
-    """Trainer class for CycleGAN model."""
-    
-    def __init__(self, G_AB, G_BA, D_A, D_B,
-                 dataloaders, optimizers,
-                 pool_size=50, device='cuda',
-                 output_dir='./outputs', img_save_epoch=5):
-        """
-        Initialize CycleGAN trainer.
-        
-        Args:
-            G_AB: Generator A to B
-            G_BA: Generator B to A
-            D_A: Discriminator for domain A
-            D_B: Discriminator for domain B
-            dataloaders: Tuple of (train_loader, val_loader)
-            optimizers: Tuple of (optimizer_G, optimizer_D)
-            pool_size (int): Size of image buffer
-            device (str): Device to use for training
-            output_dir (str): Directory to save outputs
-            img_save_epoch (int): Frequency of saving sample images
-        """
-        self.G_AB, self.G_BA = G_AB, G_BA
-        self.D_A, self.D_B = D_A, D_B
-        self.train_loader, self.val_loader = dataloaders
-        self.opt_G, self.opt_D = optimizers
-        self.device = device
-        self.best_ssim = -float('inf')
-        self.output_dir = output_dir
-        self.img_save_epoch = img_save_epoch
-        self.fake_A_pool = ImagePool(pool_size)
-        self.fake_B_pool = ImagePool(pool_size)
-
-        os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(f"{output_dir}/checkpoints", exist_ok=True)
-        os.makedirs(f"{output_dir}/images", exist_ok=True)
-
-        self.loss_history = {'G': [], 'D': [], 'cycle': [], 'ssim': []}
-        self.G_AB = self.G_AB.to(self.device)
-        self.G_BA = self.G_BA.to(self.device)
-        self.D_A = self.D_A.to(self.device)
-        self.D_B = self.D_B.to(self.device)
-
-    def save_sample_images(self, epoch, num_samples=3):
-        """Save sample images during training."""
-        self.G_AB.eval()
-        with torch.no_grad():
-            val_iter = iter(self.val_loader)
-            for i in range(num_samples):
-                try:
-                    real_A, real_B = next(val_iter)
-                except StopIteration:
-                    break
-                real_A = real_A.to(self.device)
-                real_B = real_B.to(self.device)
-                fake_B = self.G_AB(real_A)
-
-                plt.figure(figsize=(12, 4))
-                # SAR input (assume 2 or 3 channels: VV, VH, VV/VH)
-                plt.subplot(1, 3, 1)
-                show_tensor_image(real_A[0], 'Input SAR', cmap='gray')
-
-                # Real EO (assume first 3 bands are RGB)
-                plt.subplot(1, 3, 2)
-                show_tensor_image(real_B[0], 'Real EO', bands=[0, 1, 2])
-
-                # Fake EO
-                plt.subplot(1, 3, 3)
-                show_tensor_image(fake_B[0], 'Generated EO', bands=[0, 1, 2])
-
-                plt.tight_layout()
-                plt.savefig(f"{self.output_dir}/images/epoch_{epoch}_sample_{i}.png")
-                plt.close()
-
-    def train(self, n_epochs, metrics_fn):
-        """
-        Train the CycleGAN model.
-        
-        Args:
-            n_epochs (int): Number of epochs to train
-            metrics_fn: Function to compute validation metrics
-            
-        Returns:
-            dict: Training loss history
-        """
-        self.G_AB.train()
-        self.G_BA.train()
-        self.D_A.train()
-        self.D_B.train()
-        
-        for epoch in range(1, n_epochs+1):
-            epoch_losses = {'G': 0., 'D': 0., 'cycle': 0., 'ssim': 0.}
-            pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{n_epochs}")
-            
-            for real_A, real_B in pbar:
-                real_A, real_B = real_A.to(self.device), real_B.to(self.device)
-
-                # ------------------
-                #  Train Generators
-                # ------------------
-                self.opt_G.zero_grad()
-                fake_B = self.G_AB(real_A)
-                fake_A = self.G_BA(real_B)
-
-                rec_A = self.G_BA(fake_B)
-                rec_B = self.G_AB(fake_A)
-
-                # GAN losses
-                loss_GAN_AB = F.mse_loss(self.D_B(fake_B), torch.ones_like(self.D_B(fake_B)))
-                loss_GAN_BA = F.mse_loss(self.D_A(fake_A), torch.ones_like(self.D_A(fake_A)))
-
-                # Cycle consistency
-                loss_cycle = F.l1_loss(rec_A, real_A) + F.l1_loss(rec_B, real_B)
-
-                # Combined generator loss (no identity term)
-                loss_G = loss_GAN_AB + loss_GAN_BA + 10.0 * loss_cycle
-                loss_G.backward()
-                self.opt_G.step()
-
-                # -----------------------
-                #  Train Discriminators
-                # -----------------------
-                self.opt_D.zero_grad()
-                fake_B_ = self.fake_B_pool.query(fake_B.detach())
-                fake_A_ = self.fake_A_pool.query(fake_A.detach())
-
-                loss_D_B = (F.mse_loss(self.D_B(real_B), torch.ones_like(self.D_B(real_B))) +
-                                  F.mse_loss(self.D_B(fake_B_), torch.zeros_like(self.D_B(fake_B_))))
-                loss_D_A = (F.mse_loss(self.D_A(real_A), torch.ones_like(self.D_A(real_A))) +
-                                  F.mse_loss(self.D_A(fake_A_), torch.zeros_like(self.D_A(fake_A_))))
-                loss_D = loss_D_A + loss_D_B
-                loss_D.backward()
-                self.opt_D.step()
-
-                # Logging
-                epoch_losses['G'] += loss_G.item()
-                epoch_losses['D'] += loss_D.item()
-                epoch_losses['cycle'] += loss_cycle.item()
-                pbar.set_postfix(G=loss_G.item(), D=loss_D.item())
-
-            # Average losses
-            for k in ['G', 'D', 'cycle']:
-                epoch_losses[k] /= len(self.train_loader)
-
-            # Validation: compute SSIM on a small batch
-            val_real_A, val_real_B = next(iter(self.val_loader))
-            val_real_A, val_real_B = val_real_A.to(self.device), val_real_B.to(self.device)
-            val_fake_B = self.G_AB(val_real_A)
-            ssim_val = metrics_fn(val_fake_B, val_real_B)
-            epoch_losses['ssim'] = ssim_val
-
-            # Save best checkpoint
-            if ssim_val > self.best_ssim:
-                self.best_ssim = ssim_val
-                torch.save({
-                    'epoch': epoch,
-                    'G_AB': self.G_AB.state_dict(),
-                    'G_BA': self.G_BA.state_dict(),
-                    'D_A': self.D_A.state_dict(),
-                    'D_B': self.D_B.state_dict(),
-                    'opt_G': self.opt_G.state_dict(),
-                    'opt_D': self.opt_D.state_dict(),
-                    'best_ssim': self.best_ssim
-                }, f"{self.output_dir}/checkpoints/best.pth")
-
-            # Save epoch checkpoint
-            torch.save({
-                'epoch': epoch,
-                'G_AB': self.G_AB.state_dict(),
-                'G_BA': self.G_BA.state_dict(),
-                'D_A': self.D_A.state_dict(),
-                'D_B': self.D_B.state_dict(),
-                'opt_G': self.opt_G.state_dict(),
-                'opt_D': self.opt_D.state_dict(),
-                'best_ssim': self.best_ssim
-            }, f"{self.output_dir}/checkpoints/epoch_{epoch}.pth")
-
-            # Save sample images periodically
-            if epoch % self.img_save_epoch == 0:
-                self.save_sample_images(epoch, num_samples=3)
-
-            # Record loss history
-            for k in ['G', 'D', 'cycle', 'ssim']:
-                self.loss_history[k].append(epoch_losses[k])
-
-            print(f"Epoch {epoch} | SSIM: {ssim_val:.4f}")
-
-        return self.loss_history
-
-
-def ssim_metric(pred, target):
+def get_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                  lr, betas, weight_decay, resnet_factor=1.0, critic_factor=0.5):
     """
-    Calculate SSIM metric between predicted and target images.
+    Create optimizers for all models with different learning rates for ResNet layers.
     
     Args:
-        pred: Predicted images tensor
-        target: Target images tensor
+        sar_to_eo: SAR to EO generator
+        eo_to_sar: EO to SAR generator
+        sar_critic: SAR critic
+        eo_critic: EO critic
+        lr: Base learning rate
+        betas: Beta parameters for Adam optimizer
+        weight_decay: Weight decay values for each model
+        resnet_factor: Learning rate multiplier for ResNet layers
+        critic_factor: Learning rate multiplier for critics
         
     Returns:
-        float: SSIM value
+        Dictionary of optimizers
     """
-    try:
-        import piq
-        # pred and target are in [–1,1] range; data_range=2.0 covers that span
-        p = torch.clamp((pred + 1.0) / 2.0, 0.0, 1.0)
-        t = torch.clamp((target + 1.0) / 2.0, 0.0, 1.0)
-        return piq.ssim(p, t, data_range=1.0, reduction='mean').item()
-    except ImportError:
-        print("Warning: piq library not available, using L1 loss as proxy metric")
-        return -F.l1_loss(pred, target).item()
+    optimizers = {}
+    lrs = [lr, lr * 0.8, lr * critic_factor * 0.8, lr * critic_factor]
+    models = [('sar_to_eo', sar_to_eo), ('eo_to_sar', eo_to_sar), 
+              ('sar_critic', sar_critic), ('eo_critic', eo_critic)]
+    
+    for i in range(len(lrs)):
+        lr_current = lrs[i]
+        name, model = models[i]
+        
+        # Separate ResNet parameters for different learning rates
+        resnet_params = [param for pname, param in model.named_parameters() 
+                        if 'resnet' in pname and param.requires_grad]
+        resnet_ids = set(id(p) for p in resnet_params)
+        other_params = [p for p in model.parameters() 
+                       if id(p) not in resnet_ids and p.requires_grad]
+        
+        # Create parameter groups with different learning rates
+        param_groups = []
+        if resnet_params:
+            param_groups.append({'params': resnet_params, 'lr': lr_current * resnet_factor})
+        if other_params:
+            param_groups.append({'params': other_params, 'lr': lr_current})
+        
+        optimizers[name] = optim.AdamW(
+            param_groups, 
+            weight_decay=weight_decay[i], 
+            betas=betas, 
+            fused=True, 
+            eps=1e-8
+        )
+    
+    return optimizers
+
+
+def freeze_layers(model, layers=[]):
+    """
+    Freeze or unfreeze specific layers in a model.
+    
+    Args:
+        model: PyTorch model
+        layers: List of layer name patterns to freeze
+    """
+    for name, param in model.named_parameters():
+        if any(layer in name for layer in layers):
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+
+
+def get_progressive_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                             epoch, betas=(0.5, 0.999), weight_decay=[1e-4, 1e-4, 0, 0]):
+    """
+    Progressive learning strategy with different freezing and learning rates per epoch.
+    
+    Args:
+        sar_to_eo: SAR to EO generator
+        eo_to_sar: EO to SAR generator
+        sar_critic: SAR critic
+        eo_critic: EO critic
+        epoch: Current epoch
+        betas: Beta parameters for optimizers
+        weight_decay: Weight decay values
+        
+    Returns:
+        Dictionary of optimizers for current epoch
+    """
+    if epoch in range(3):
+        # Early epochs: freeze ResNet, low learning rate
+        lr = 3e-4
+        freeze_layers(sar_to_eo, ['resnet'])
+        freeze_layers(eo_to_sar, ['resnet'])
+        freeze_layers(sar_critic, ['resnet'])
+        freeze_layers(eo_critic, ['resnet'])
+        return get_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                            lr, betas, weight_decay, resnet_factor=0.01, critic_factor=0.2)
+        
+    elif epoch in range(3, 6):
+        # Mid-early epochs: unfreeze all, moderate learning rate
+        lr = 1e-4
+        freeze_layers(sar_to_eo)
+        freeze_layers(eo_to_sar)
+        freeze_layers(sar_critic)
+        freeze_layers(eo_critic)
+        return get_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                            lr, betas, weight_decay, resnet_factor=0.05, critic_factor=0.2)
+        
+    elif epoch in range(6, 10):
+        # Mid epochs: balanced learning
+        lr = 5e-5
+        return get_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                            lr, betas, weight_decay, resnet_factor=0.1, critic_factor=0.4)
+        
+    else:
+        # Late epochs: fine-tuning with low learning rate
+        lr = 1e-5
+        return get_optimizers(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                            lr, betas, weight_decay)
+
+
+def save_checkpoint(sar_to_eo, eo_to_sar, sar_critic, eo_critic, epoch, 
+                   checkpoint_dir=CHECKPOINT_DIR):
+    """
+    Save model checkpoints.
+    
+    Args:
+        sar_to_eo: SAR to EO generator
+        eo_to_sar: EO to SAR generator
+        sar_critic: SAR critic
+        eo_critic: EO critic
+        epoch: Current epoch
+        checkpoint_dir: Directory to save checkpoints
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint = {
+        'sar_to_eo': sar_to_eo.state_dict(),
+        'eo_to_sar': eo_to_sar.state_dict(),
+        'sar_critic': sar_critic.state_dict(),
+        'eo_critic': eo_critic.state_dict(),
+        'epoch': epoch
+    }
+    
+    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_{epoch}.pt')
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved: {checkpoint_path}")
+
+
+def load_checkpoint(checkpoint_path, sar_to_eo, eo_to_sar, sar_critic, eo_critic):
+    """
+    Load model checkpoints.
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        sar_to_eo: SAR to EO generator
+        eo_to_sar: EO to SAR generator
+        sar_critic: SAR critic
+        eo_critic: EO critic
+        
+    Returns:
+        Starting epoch number
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
+    
+    sar_to_eo.load_state_dict(checkpoint['sar_to_eo'])
+    eo_to_sar.load_state_dict(checkpoint['eo_to_sar'])
+    sar_critic.load_state_dict(checkpoint['sar_critic'])
+    eo_critic.load_state_dict(checkpoint['eo_critic'])
+    
+    starting_epoch = checkpoint.get('epoch', 0) + 1
+    print(f"Checkpoint loaded: {checkpoint_path}, resuming from epoch {starting_epoch}")
+    
+    return starting_epoch
+
+
+def train_cyclegan(sar_to_eo, eo_to_sar, sar_critic, eo_critic, 
+                  train_dataloader, val_dataloader=None,
+                  crit_repeats=CRITIC_REPEATS, gen_repeats=GENERATOR_REPEATS, 
+                  epochs=EPOCHS, device=DEVICE, starting_epoch=0,
+                  checkpoint_path=None):
+    """
+    Main training loop for CycleGAN.
+    
+    Args:
+        sar_to_eo: SAR to EO generator
+        eo_to_sar: EO to SAR generator
+        sar_critic: SAR critic
+        eo_critic: EO critic
+        train_dataloader: Training data loader
+        val_dataloader: Validation data loader (optional)
+        crit_repeats: Number of critic updates per batch
+        gen_repeats: Number of generator updates per batch
+        epochs: Total number of epochs
+        device: Device for training
+        starting_epoch: Starting epoch (for resuming training)
+        checkpoint_path: Path to load checkpoint from
+    """
+    
+    # Load checkpoint if provided
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        starting_epoch = load_checkpoint(checkpoint_path, sar_to_eo, eo_to_sar, 
+                                       sar_critic, eo_critic)
+    
+    # Initialize gradient scaler for mixed precision training
+    scaler = GradScaler(device)
+    
+    # Training loop
+    for epoch in range(starting_epoch, epochs):
+        # Set models to training mode
+        sar_to_eo.train()
+        eo_to_sar.train()
+        sar_critic.train()
+        eo_critic.train()
+        
+        # Update optimizers based on progressive learning schedule
+        if epoch in [0, 3, 6, 10, starting_epoch]:
+            optimizers = get_progressive_optimizers(sar_to_eo, eo_to_sar, 
+                                                  sar_critic, eo_critic, epoch)
+            # Clear gradients
+            for opt in optimizers.values():
+                opt.zero_grad(set_to_none=True)
+            
+            # Reduce critic repeats as training progresses
+            crit_repeats = max(crit_repeats - 1, 1) if crit_repeats > 1 else 1
+        
+        # Initialize epoch statistics
+        epoch_stats = {
+            'sar_critic_loss': [], 'sar_adv': [], 'sar_cycle': [], 
+            'eo_critic_loss': [], 'eo_adv': [], 'eo_cycle': [], 
+            'perceptual': [], 'ssim': []
+        }
+
+        # Initialize loss calculator
+        losses = CycleGANLosses(device=device)
+        
+        # Training loop for current epoch
+        for batch_idx, (sar_batch, eo_batch) in enumerate(tqdm(train_dataloader, 
+                                                             desc=f"Epoch: {epoch}/{epochs}")):
+            # Move data to device
+            sar_batch = sar_batch.to(device=device, memory_format=torch.channels_last)
+            eo_batch = eo_batch.to(device=device, memory_format=torch.channels_last)
+            
+            # Train critics multiple times per batch
+            for crit_step in range(crit_repeats):
+                with autocast(device):
+                    # Generate fake images (no gradients needed for generator updates)
+                    with torch.no_grad():
+                        fake_sar = eo_to_sar(eo_batch)
+                        fake_eo = sar_to_eo(sar_batch)
+                    
+                    # Calculate critic losses
+                    sar_loss = losses.critic_loss(sar_critic, sar_batch, fake_sar, 
+                                                 losses.lambdas['gp'], device)
+                    eo_loss = losses.critic_loss(eo_critic, eo_batch, fake_eo, 
+                                               losses.lambdas['gp'], device)
+                
+                # Backward pass with gradient scaling
+                scaler.scale(sar_loss).backward()
+                scaler.scale(eo_loss).backward()
+
+                # Unscale gradients for clipping
+                scaler.unscale_(optimizers['sar_critic'])
+                scaler.unscale_(optimizers['eo_critic'])
+
+                # Handle NaN/Inf gradients
+                for model in [sar_critic, eo_critic]:
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            mask = torch.isnan(param.grad.data) | torch.isinf(param.grad.data)
+                            if mask.any():
+                                param.grad.data[mask] = 0.0
+                
+                # Update critic optimizers
+                scaler.step(optimizers['sar_critic'])
+                scaler.step(optimizers['eo_critic'])
+                scaler.update()
+
+                # Clear gradients
+                optimizers['sar_critic'].zero_grad(set_to_none=True)
+                optimizers['eo_critic'].zero_grad(set_to_none=True)
+                
+                # Record losses
+                epoch_stats['sar_critic_loss'].append(sar_loss.item())
+                epoch_stats['eo_critic_loss'].append(eo_loss.item())
+                
+            # Train generators
+            for gen_step in range(gen_repeats):
+                with autocast(device):
+                    # Calculate generator losses
+                    g_loss, g_stats = losses.generator_loss_focused(
+                        sar_to_eo, eo_to_sar, sar_critic, eo_critic,
+                        sar_batch, eo_batch, device
+                    )
+                
+                # Backward pass
+                scaler.scale(g_loss).backward()
+            
+                # Unscale gradients
+                scaler.unscale_(optimizers['sar_to_eo'])
+                scaler.unscale_(optimizers['eo_to_sar'])
+                
+                # Handle NaN/Inf gradients
+                for model in [sar_to_eo, eo_to_sar]:
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            mask = torch.isnan(param.grad.data) | torch.isinf(param.grad.data)
+                            if mask.any():
+                                param.grad.data[mask] = 0.0
+                
+                # Update generator optimizers
+                scaler.step(optimizers['sar_to_eo'])
+                scaler.step(optimizers['eo_to_sar'])
+                scaler.update()
+                
+                # Clear gradients
+                optimizers['sar_to_eo'].zero_grad(set_to_none=True)
+                optimizers['eo_to_sar'].zero_grad(set_to_none=True)
+                
+                # Record generator losses
+                for key, value in g_stats.items():
+                    epoch_stats[key].append(value)
+                
+            # Print progress every 10 batches
+            if batch_idx % 10 == 0:
+                print(f"Batch {batch_idx}: "
+                      f"EO Adv: {g_stats['eo_adv']:.4f}, "
+                      f"EO Cycle: {g_stats['eo_cycle']:.4f}, "
+                      f"EO Critic: {eo_loss.item():.4f}, "
+                      f"SAR Adv: {g_stats['sar_adv']:.4f}, "
+                      f"SAR Cycle: {g_stats['sar_cycle']:.4f}, "
+                      f"SAR Critic: {sar_loss.item():.4f}, "
+                      f"Perceptual: {g_stats['perc']:.4f}, "
+                      f"SSIM: {g_stats['ssim']:.4f}")
+
+        # Save checkpoint every epoch
+        save_checkpoint(sar_to_eo, eo_to_sar, sar_critic, eo_critic, epoch)
+
+        # Print epoch summary
+        print(f"\nEpoch {epoch} Summary:")
+        print(f"  EO Critic Loss: {np.mean(epoch_stats['eo_critic_loss']):.4f}")
+        print(f"  EO Adversarial Loss: {np.mean(epoch_stats['eo_adv']):.4f}")
+        print(f"  EO Cycle Consistency Loss: {np.mean(epoch_stats['eo_cycle']):.4f}")
+        print(f"  SAR Critic Loss: {np.mean(epoch_stats['sar_critic_loss']):.4f}")
+        print(f"  SAR Adversarial Loss: {np.mean(epoch_stats['sar_adv']):.4f}")
+        print(f"  SAR Cycle Consistency Loss: {np.mean(epoch_stats['sar_cycle']):.4f}")
+        print(f"  Perceptual Loss: {np.mean(epoch_stats['perceptual']):.4f}")
+        print(f"  SSIM: {np.mean(epoch_stats['ssim']):.4f}")
+        print("-" * 50)
 
 
 def main():
     """Main training function."""
-    # Configuration
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
+    print("Setting up training environment...")
     
-    # Data paths (modify these according to your data location)
-    sar_dir = '/kaggle/input/sar-images/ROIs2017_winter_s1/ROIs2017_winter'
-    eo_dir = '/kaggle/input/sar-images/ROIs2017_winter_s2/ROIs2017_winter'
+    # Setup environment
+    setup_data_environment()
     
-    # Collect data paths
-    sar_paths, eo_paths = collect_data_paths(sar_dir, eo_dir, max_samples=5000)
+    # Create data loaders
+    print("Creating data loaders...")
+    train_loader, val_loader = create_dataloaders(DATA_PATH)
+    print(f"Train batches: {len(train_loader)}")
+    print(f"Val batches: {len(val_loader)}")
     
-    # Create dataset and dataloaders
-    dataset = SARToEODataset(sar_paths, eo_paths, output_mode='RGB')
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+    # Create models
+    print("Creating models...")
+    sar_to_eo, eo_to_sar, sar_critic, eo_critic = create_models()
     
-    train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False)
-    
-    # Initialize models
-    G_sar2rgb = ResnetGenerator(input_nc=3, output_nc=3)
-    G_rgb2sar = ResnetGenerator(input_nc=3, output_nc=3)
-    D_sar = NLayerDiscriminator(input_nc=3)
-    D_rgb = NLayerDiscriminator(input_nc=3)
-    
-    # Initialize optimizers
-    gen_params = itertools.chain(G_sar2rgb.parameters(), G_rgb2sar.parameters())
-    disc_params = itertools.chain(D_sar.parameters(), D_rgb.parameters())
-    
-    optimizer_G = torch.optim.AdamW(gen_params, lr=2e-4,
-                                    betas=(0.5, 0.999), weight_decay=1e-4)
-    optimizer_D = torch.optim.AdamW(disc_params, lr=2e-4,
-                                    betas=(0.5, 0.999), weight_decay=1e-4)
-    
-    # Initialize trainer
-    trainer = CycleGANTrainer(
-        G_sar2rgb, G_rgb2sar, D_sar, D_rgb,
-        dataloaders=(train_loader, val_loader),
-        optimizers=(optimizer_G, optimizer_D),
-        pool_size=50,
-        device=device,
-        output_dir='./runs/exp1',
-        img_save_epoch=5
+    # Start training
+    print("Starting training...")
+    train_cyclegan(
+        sar_to_eo=sar_to_eo,
+        eo_to_sar=eo_to_sar, 
+        sar_critic=sar_critic,
+        eo_critic=eo_critic, 
+        train_dataloader=train_loader,
+        val_dataloader=val_loader,
+        crit_repeats=CRITIC_REPEATS,
+        gen_repeats=GENERATOR_REPEATS,
+        epochs=EPOCHS,
+        device=DEVICE,
+        starting_epoch=0
     )
     
-    # Train the model
-    print("Starting training...")
-    loss_history = trainer.train(15, ssim_metric)
     print("Training completed!")
-    
-    return loss_history
 
 
 if __name__ == "__main__":

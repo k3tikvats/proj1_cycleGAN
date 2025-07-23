@@ -1,49 +1,60 @@
 """
-Configuration file for SAR to EO CycleGAN training.
-Modify these parameters according to your setup and requirements.
+Configuration file for SAR to EO CycleGAN project.
+Contains all hyperparameters, paths, and model configurations.
 """
 
-# Data Configuration
-DATA_CONFIG = {
-    'sar_dir': '/kaggle/input/sar-images/ROIs2017_winter_s1/ROIs2017_winter',
-    'eo_dir': '/kaggle/input/sar-images/ROIs2017_winter_s2/ROIs2017_winter',
-    'max_samples': 5000,  # Set to None to use all available data
-    'patch_size': 256,
-    'output_mode': 'RGB',  # Options: 'RGB', 'NIR_SWIR', 'RGB_NIR'
-}
+import torch
+import os
 
-# Model Configuration
-MODEL_CONFIG = {
-    'input_nc': 3,          # Number of input channels
-    'output_nc': 3,         # Number of output channels
-    'ngf': 64,              # Generator filters
-    'ndf': 64,              # Discriminator filters
-    'n_blocks': 9,          # Number of ResNet blocks
-    'n_layers': 3,          # Number of discriminator layers
-}
+# Device configuration
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Training Configuration
-TRAIN_CONFIG = {
-    'n_epochs': 15,
-    'batch_size': 8,
-    'learning_rate': 2e-4,
-    'betas': (0.5, 0.999),
-    'weight_decay': 1e-4,
-    'cycle_loss_weight': 10.0,
-    'pool_size': 50,
-    'num_workers': 2,
-    'train_split': 0.8,
-}
+# Data paths (relative to project root)
+DATA_PATH = "/kaggle/input/sar-images"  # Update this path as needed
+CHECKPOINT_DIR = "./checkpoints"
+GENERATED_SAMPLES_DIR = "./generated_samples"
 
-# Output Configuration
-OUTPUT_CONFIG = {
-    'output_dir': './runs/exp1',
-    'img_save_epoch': 5,
-    'checkpoint_epoch': 1,
-}
+# Training hyperparameters
+BATCH_SIZE = 8
+NUM_WORKERS = 2
+EPOCHS = 20
+LEARNING_RATE = 1e-4
 
-# Device Configuration
-DEVICE_CONFIG = {
-    'device': 'auto',  # 'auto', 'cuda', or 'cpu'
-    'mixed_precision': False,  # Enable for faster training (experimental)
-}
+# Model hyperparameters
+CRITIC_REPEATS = 4
+GENERATOR_REPEATS = 1
+
+# Loss function weights
+LAMBDA_EO_ADV = 2.0
+LAMBDA_EO_CYCLE = 10.0
+LAMBDA_SAR_CYCLE = 7.5
+LAMBDA_SAR_ADV = 1.5
+LAMBDA_PERCEPTUAL = 0.25
+LAMBDA_SSIM = 0.25
+LAMBDA_GP = 0.0
+
+# Data split
+TRAIN_SPLIT = 0.1  # Note: This is set to 0.1 as in the original notebook
+
+# Model architecture parameters
+SAR_CHANNELS = 2  # VV, VH
+EO_CHANNELS = 13  # All S2 bands
+
+# Normalization ranges
+SAR_NORM_RANGE = (-31.9, -1.3)
+EO_NORM_RANGE = (7.0, 5356.0)
+
+# Optimizer parameters
+BETAS = (0.5, 0.999)
+WEIGHT_DECAY = [1e-4, 1e-4, 0, 0]
+
+# Visualization parameters
+RGB_INDICES = [3, 2, 1]  # S2 bands for RGB visualization
+NIR_SWIR_RE_INDICES = [7, 11, 4]  # NIR, SWIR, Red Edge for false color
+
+# Random seed for reproducibility
+RANDOM_SEED = 42
+
+# Create directories if they don't exist
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(GENERATED_SAMPLES_DIR, exist_ok=True)
