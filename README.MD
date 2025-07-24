@@ -13,15 +13,16 @@ This project implements a CycleGAN-based approach for translating Synthetic Aper
 ## Project Overview
 
 This project addresses the challenge of converting SAR satellite imagery to EO imagery using deep learning. SAR images provide all-weather, day-night imaging capabilities but are difficult to interpret. Our CycleGAN-based approach learns to translate SAR images to more interpretable EO images while maintaining semantic content.
+The model does 2-band to 13-band conversion.
 
 ### Key Features
 
 - **CycleGAN Architecture**: Bidirectional translation between SAR and EO domains
 - **ResNet-18 Backbone**: Pretrained encoder for robust feature extraction
 - **Custom Decoder**: Specialized upsampling blocks for high-quality image generation
-- **Progressive Training**: Learning rate scheduling and layer freezing strategies
+- **Progressive Training**: Individual learning rate scheduling for all models
 - **Multi-loss Optimization**: Combines adversarial, cycle consistency, perceptual, and SSIM losses
-- **Comprehensive Evaluation**: Multiple metrics including SSIM, PSNR, and L1 loss
+- **Comprehensive Evaluation**: Metrics such as SSIM and PSNR
 
 ## Instructions to Run Code
 
@@ -90,7 +91,7 @@ project1_SAR_to_EO\
 ├── README.md                    # Project summary, team info, instructions
 ├── requirements.txt             # List of Python libraries used
 ├── preprocess.py               # Preprocessing & normalization code
-├── train_cycleGAN.py           # SAR → EO training scripts
+├── train_cycleGAN.py           # CycleGAN training scripts
 ├── evaluate_results.py         # Visualizations and metrics
 ├── generated_samples/          # Sample generated EO images
 ├── config.py                   # Configuration parameters
@@ -110,8 +111,8 @@ project1_SAR_to_EO\
 - **Patch Matching**: Ensures spatial correspondence between SAR and EO patches
 
 ### 2. Normalization
-- **SAR Normalization**: Clips values to [-31.9, -1.3] dB range, then normalizes to [-1, 1]
-- **EO Normalization**: Clips values to [7.0, 5356.0] range, then normalizes to [-1, 1]
+- **SAR Normalization**: Clips values based on the 99th percentile values of the data to handle outliers, then normalizes to [-1, 1]
+- **EO Normalization**: Clips values based on the 99th percentile values of the data to handle outliers, then normalizes to [-1, 1]
 - **GAN-Compatible**: Ensures proper input range for stable GAN training
 
 ### 3. Data Augmentation
@@ -138,15 +139,15 @@ project1_SAR_to_EO\
 - **Progressive Learning**: Different learning rates and freezing schedules across epochs
 - **Mixed Precision**: Automatic mixed precision for memory efficiency
 - **Gradient Handling**: Robust NaN/Inf gradient detection and correction
-- **Checkpointing**: Regular model saves for recovery and evaluation
+- **Model Checkpointing**: Regular model saves for recovery and evaluation
 
 ## Key Findings and Observations
 
 ### Training Insights
-1. **Progressive Learning**: Early epochs benefit from frozen ResNet layers, allowing custom components to adapt first
+1. **Progressive Learning**: Early epochs benefit from lowering learning rate on ResNet layers, allowing custom components to adapt quicker
 2. **Loss Balancing**: Careful weighting of adversarial, cycle consistency, and perceptual losses is crucial
 3. **Stability**: Instance normalization and spectral normalization significantly improve training stability
-4. **Memory Efficiency**: Channels_last memory format and gradient scaling enable larger batch sizes
+4. **Memory Efficiency**: Channels_last memory format and gradient scaling enable larger batch sizes, if required
 
 ### Model Performance
 1. **Visual Quality**: Generated EO images show good visual correspondence with ground truth
@@ -185,7 +186,6 @@ project1_SAR_to_EO\
 
 - **SSIM**: Structural Similarity Index for perceptual quality
 - **PSNR**: Peak Signal-to-Noise Ratio for signal fidelity
-- **L1 Loss**: Mean absolute error between generated and target images
 - **Perceptual Loss**: VGG-based feature matching for semantic similarity
 
 ## Future Improvements
@@ -195,6 +195,7 @@ project1_SAR_to_EO\
 3. **Dataset Expansion**: Include more seasons and geographic regions
 4. **Application-Specific Metrics**: Develop domain-specific evaluation criteria
 5. **Real-Time Inference**: Optimize models for deployment scenarios
+6. ""Cloud-Free Image Generation**: Improve training and model to generate cloud-free EO images
 
 ## Acknowledgments
 
