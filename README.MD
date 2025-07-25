@@ -8,12 +8,11 @@ This project implements a CycleGAN-based approach for translating Synthetic Aper
 - **[Pratham Jain]** - [23/IT/201] - [prathamjain_23se117@dtu.ac.in]
 - **[Tanishk Gopalani]** - [23/EE/266] - [tanishkgopalani_23ee266@dtu.ac.in]
 
-*Note: Please update with actual team member information*
-
 ## Project Overview
 
 This project addresses the challenge of converting SAR satellite imagery to EO imagery using deep learning. SAR images provide all-weather, day-night imaging capabilities but are difficult to interpret. Our CycleGAN-based approach learns to translate SAR images to more interpretable EO images while maintaining semantic content.
 The model does 2-band to 13-band conversion.
+The link to downloading ZipFile for the project :- (Link)[https://github.com/k3tikvats/proj1_cycleGAN/archive/refs/heads/main.zip]
 
 ### Key Features
 
