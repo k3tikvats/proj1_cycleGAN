@@ -11,8 +11,9 @@ This project implements a CycleGAN-based approach for translating Synthetic Aper
 ## Project Overview
 
 This project addresses the challenge of converting SAR satellite imagery to EO imagery using deep learning. SAR images provide all-weather, day-night imaging capabilities but are difficult to interpret. Our CycleGAN-based approach learns to translate SAR images to more interpretable EO images while maintaining semantic content.
-The model does 2-band to 13-band conversion.
-The link to downloading ZipFile for the project :- [Link](https://github.com/k3tikvats/proj1_cycleGAN/archive/refs/heads/main.zip)
+<br>The model does 2-band to 13-band conversion.
+<br>The link to downloading ZipFile for the project :- [Link](https://github.com/k3tikvats/proj1_cycleGAN/archive/refs/heads/main.zip)
+<br>The dataset can also be downloaded from this Kaggle Link :- [Link](https://www.kaggle.com/datasets/tanishkgopalani/sar-images)
 
 ### Key Features
 
